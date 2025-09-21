@@ -1,0 +1,90 @@
+//@version=6
+strategy("ETH/USD DCA Cycle (Production, v6 — moving anchor on fills)",
+     overlay=true,
+     initial_capital=100,
+     currency=currency.USD,
+     pyramiding=100,
+     calc_on_order_fills=true)
+
+// ===== Inputs =====
+drop_pct_input   = input.float(1.5, "Drop % per entry", step=0.1, minval=0.1)
+take_pct_input   = input.float(2.0, "Take Profit % above avg", step=0.1, minval=0.1)
+max_entries      = input.int(10, "Max entries per cycle", minval=1, maxval=100)
+initial_cash     = input.float(100.0, "Cycle starting cash (USD)", minval=1.0)
+catch_up         = input.bool(true, "Catch up multiple steps on same bar (gap down)")
+start_date       = input.time(timestamp("2024-01-01T00:00:00"), "Start Trading From")
+end_date         = input.time(timestamp("2030-01-01T23:59:59"), "Stop Trading At")
+
+// Manual anchor override
+use_manual_anchor = input.bool(false, "Use Manual Anchor Price?")
+manual_anchor     = input.float(2000.0, "Manual Anchor Price", step=0.1)
+
+// Fractions
+drop_pct = drop_pct_input / 100.0
+take_pct = take_pct_input / 100.0
+
+// ===== State =====
+var float anchor       = na
+var int   steps_filled = 0
+var bool  anchor_set   = false
+
+// ===== Helpers =====
+qty_for_price(p) =>
+    cash_per_entry = initial_cash / max_entries
+    cash_per_entry / p
+
+// ===== Date Filter =====
+in_date_range = time >= start_date and time <= end_date
+
+// ===== Anchor Initialization (first eligible bar) =====
+if in_date_range and not anchor_set
+    anchor     := use_manual_anchor ? manual_anchor : close
+    anchor_set := true
+
+// ===== Core Trading Logic =====
+if in_date_range and anchor_set
+    // --- ENTRIES ---
+    // Next step is always 1 drop_pct below *current* anchor (moving base).
+    // If catch_up=true, we iteratively fill as many steps as the bar's low touched,
+    // rebasing anchor after each fill so we end at the smallest filled price.
+    remaining = max_entries - steps_filled
+
+    if remaining > 0
+        if catch_up
+            // Try to fill multiple rungs in this bar, rebasing each time
+            for _i = 0 to remaining - 1
+                next_step_price = anchor * (1 - drop_pct)
+                if low <= next_step_price
+                    id = "Buy_" + str.tostring(steps_filled + 1)
+                    strategy.entry(id, strategy.long, qty = qty_for_price(next_step_price), limit=next_step_price)
+                    steps_filled += 1
+                    anchor       := next_step_price   // <-- rebase anchor to filled price
+                else
+                    break
+        else
+            // Only one rung per bar, if touched
+            next_step_price = anchor * (1 - drop_pct)
+            if low <= next_step_price
+                id = "Buy_" + str.tostring(steps_filled + 1)
+                strategy.entry(id, strategy.long, qty = qty_for_price(next_step_price), limit=next_step_price)
+                steps_filled += 1
+                anchor       := next_step_price       // <-- rebase anchor to filled price
+
+    // --- EXITS ---
+    in_pos = strategy.position_size > 0
+    avg    = strategy.position_avg_price
+    tp_lvl = in_pos ? avg * (1 + take_pct) : na
+
+    if in_pos
+        strategy.exit("TP_All", from_entry="", limit=tp_lvl)
+
+    // After flat (limit exit filled), start a new cycle from the exit price
+    if not in_pos and strategy.closedtrades > 0
+        last_exit = strategy.closedtrades.exit_price(strategy.closedtrades - 1)
+        anchor       := last_exit
+        steps_filled := 0
+
+// ===== Plots =====
+plot(anchor_set ? anchor : na, "Anchor (moving)", color=color.gray)
+plot(strategy.position_size > 0 ? strategy.position_avg_price : na,
+     "Avg Entry", color=color.yellow, linewidth=2)
