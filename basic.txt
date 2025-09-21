@@ -1,0 +1,89 @@
+//@version=6
+strategy("ETH/USD DCA (1 buy & 1 sell max per bar, flat trail +2%)", 
+     overlay=true,
+     initial_capital=100,
+     currency=currency.USD,
+     pyramiding=100,
+     calc_on_order_fills=true,
+     process_orders_on_close=true)
+
+//==== Inputs ====
+drop_pct_input    = input.float(1.5, "Drop % per entry", step=0.1, minval=0.1)
+take_pct_input    = input.float(2.0, "Take Profit % above avg", step=0.1, minval=0.1)
+max_entries       = input.int(10, "Max entries per cycle", minval=1)
+initial_cash      = input.float(100.0, "Cycle starting cash (USD)", minval=1.0)
+start_date        = input.time(timestamp("2024-01-01T00:00:00"), "Start Trading From")
+end_date          = input.time(timestamp("2030-01-01T23:59:59"), "Stop Trading At")
+use_manual_anchor = input.bool(false, "Use Manual Anchor Price?")
+manual_anchor     = input.float(2000.0, "Manual Anchor Price", step=0.1)
+
+//==== Fractions ====
+drop_pct = drop_pct_input / 100.0
+take_pct = take_pct_input / 100.0
+
+//==== State ====
+var float anchor       = na   // reference price for next rung / trailing while flat
+var int   steps_filled = 0
+var bool  anchor_set   = false
+
+//==== Utility ====
+qty_for_price(p) =>
+    (initial_cash / max_entries) / p
+
+//==== Date window ====
+in_window = time >= start_date and time <= end_date
+
+//==== Anchor init at first bar inside window ====
+if in_window and not anchor_set
+    anchor     := use_manual_anchor ? manual_anchor : close
+    anchor_set := true
+
+//==== Per-bar execution guards (max 1 buy & 1 sell) ====
+var bool did_buy_this_bar  = false
+var bool did_sell_this_bar = false
+if barstate.isnew
+    did_buy_this_bar  := false
+    did_sell_this_bar := false
+
+//==== CORE LOGIC ====
+if in_window and anchor_set
+
+    // --- SELL (whole position) — at most once per bar
+    in_pos = strategy.position_size > 0
+    avg    = strategy.position_avg_price
+    tp_lvl = in_pos ? avg * (1 + take_pct) : na
+
+    if in_pos and not did_sell_this_bar and high >= tp_lvl
+        strategy.exit("TP_ALL", from_entry="LONG", limit=tp_lvl)
+        did_sell_this_bar := true
+
+    // After a filled exit: reset cycle from the exit price
+    if not in_pos and strategy.closedtrades > 0 and did_sell_this_bar
+        last_exit = strategy.closedtrades.exit_price(strategy.closedtrades - 1)
+        anchor       := last_exit
+        steps_filled := 0
+
+    // --- While FLAT: trail anchor UP if price rises +take_pct above current anchor
+    //     (Your request: “if price goes up 2% after TP all, set the anchor to it and try to re-enter”)
+    if not in_pos
+        upshift_level = anchor * (1 + take_pct)
+        if high >= upshift_level
+            // re-anchor to this bar's high (use 'close' here if you prefer)
+            anchor := high
+
+    // --- BUY (one rung max per bar)
+    can_buy_more    = steps_filled < max_entries
+    next_rung_price = anchor * (1 - drop_pct)
+
+    if can_buy_more and not did_buy_this_bar and low <= next_rung_price
+        q = qty_for_price(next_rung_price)
+        strategy.entry("LONG", strategy.long, qty=q, limit=next_rung_price)
+        steps_filled    += 1
+        anchor           := next_rung_price   // move anchor down to the filled rung
+        did_buy_this_bar := true
+
+//==== Plots ====
+plot(anchor_set ? anchor : na, "Anchor (moving/trailing)", color=color.gray)
+plot(in_window and strategy.position_size > 0 ? strategy.position_avg_price : na,
+     "Avg Entry", color=color.yellow, linewidth=2)
+plot(anchor_set ? anchor * (1 - drop_pct) : na, "Next Rung", color=color.new(color.blue, 60), style=plot.style_linebr)
