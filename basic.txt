@@ -1,5 +1,5 @@
 //@version=6
-strategy("ETH/USD DCA (confirmed fills, 1 buy+1 sell per bar, flat trail +2%, tick tolerance)", 
+strategy("ETH/USD DCA (market orders, 1 buy+1 sell per bar, flat trail +2%, tick tolerance)", 
      overlay=true,
      initial_capital=100,
      currency=currency.USD,
@@ -50,38 +50,38 @@ if in_window and anchor_set
     in_pos = strategy.position_size > 0
     avg    = strategy.position_avg_price
 
-    // --- SELL first ---
+    // --- SELL first (market) ---
     if in_pos and not did_sell
         tp_lvl = avg * (1 + take_pct)
         if high + eps >= tp_lvl
-            strategy.exit("TP_ALL", from_entry="LONG", limit=tp_lvl)
+            strategy.close("LONG")     // market exit
             did_sell     := true
             steps_filled := 0
-            anchor       := tp_lvl
+            anchor       := close      // reset anchor to execution price
 
-    // confirm anchor sync if position closed
-    if not in_pos and strategy.closedtrades > 0
+    // If flat, ensure anchor synced to last exit (safety)
+    if strategy.position_size == 0 and strategy.closedtrades > 0
         last_exit = strategy.closedtrades.exit_price(strategy.closedtrades - 1)
-        if na(anchor) or math.abs(anchor - last_exit) > eps
+        if na(anchor)
             anchor := last_exit
         steps_filled := 0
 
-    // trail anchor up +2% while flat
+    // While flat, trail anchor UP if price rises +2%
     if strategy.position_size == 0
         uptrail = anchor * (1 + take_pct)
         if high + eps >= uptrail
             anchor := high
 
-    // --- BUY once per bar ---
+    // --- BUY once per bar (market) ---
     can_buy_more = steps_filled < max_entries
     rung_price   = anchor * (1 - drop_pct)
 
     if can_buy_more and not did_buy and low - eps <= rung_price
-        q = qty_for_price(rung_price)
-        strategy.entry("LONG", strategy.long, qty=q, limit=rung_price)
+        q = qty_for_price(close)           // size using current close for market fill
+        strategy.entry("LONG", strategy.long, qty=q)   // market entry
         did_buy      := true
         steps_filled += 1
-        anchor       := rung_price
+        anchor       := close              // move anchor to execution price
 
 //==== Plots ====
 plot(anchor_set ? anchor : na, "Anchor", color=color.gray)
