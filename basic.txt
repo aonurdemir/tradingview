@@ -82,8 +82,17 @@ if in_window and anchor_set
         anchor           := next_rung_price   // move anchor down to the filled rung
         did_buy_this_bar := true
 
+// ---- Visual helpers (next rung & next TP) ----
+next_rung_vis = anchor_set ? anchor * (1 - drop_pct) : na
+cur_in_pos    = strategy.position_size > 0
+next_tp_vis   = (in_window and cur_in_pos) ? strategy.position_avg_price * (1 + take_pct) : na
+
+
 //==== Plots ====
 plot(anchor_set ? anchor : na, "Anchor (moving/trailing)", color=color.gray)
 plot(in_window and strategy.position_size > 0 ? strategy.position_avg_price : na,
      "Avg Entry", color=color.yellow, linewidth=2)
-plot(anchor_set ? anchor * (1 - drop_pct) : na, "Next Rung", color=color.new(color.blue, 60), style=plot.style_linebr)
+
+plot(next_rung_vis, title="Next Rung", color=color.new(color.blue, 60), style=plot.style_linebr)
+plot(next_tp_vis,  title="Next TP",   color=color.new(color.red, 60),  style=plot.style_linebr)
+
